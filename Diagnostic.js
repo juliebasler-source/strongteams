@@ -537,3 +537,137 @@ function debugRodneyEvent() {
   Logger.log('DEBUG COMPLETE');
   Logger.log('='.repeat(70));
 }
+/**
+ * Diagnose Phase 2 processing for Rodney Stripe6
+ * Run this to see exactly what's happening
+ */
+function diagnoseRodneyPhase2() {
+  Logger.log('='.repeat(70));
+  Logger.log('DIAGNOSING RODNEY STRIPE6 PHASE 2 EVENT');
+  Logger.log('='.repeat(70));
+  
+  // Get all events from calendars
+  const events = CalendarUtils.getNewCalendarEvents();
+  
+  Logger.log(`\n📊 Total events found: ${events.length}\n`);
+  
+  // Look for any event with "Rodney" in the title or description
+  let rodneyEvents = [];
+  
+  events.forEach((event, index) => {
+    const title = event.getTitle() || '';
+    const desc = event.getDescription() || '';
+    const location = event.getLocation() || '';
+    
+    // Check if this event is related to Rodney
+    if (title.toLowerCase().includes('rodney') || 
+        desc.toLowerCase().includes('rodney') ||
+        desc.includes('rcox@ministryinsights.com')) {
+      
+      Logger.log(`\n${'─'.repeat(70)}`);
+      Logger.log(`FOUND EVENT #${index + 1}: ${title}`);
+      Logger.log('─'.repeat(70));
+      Logger.log(`📅 Date: ${event.getStartTime()}`);
+      Logger.log(`📍 Location (Zoom): "${location}"`);
+      Logger.log(`🆔 Event ID: ${event.getId()}`);
+      
+      // Check Phase type
+      const isP1 = CalendarUtils.isPhase1Event(event);
+      const isP2 = CalendarUtils.isPhase2Event(event);
+      Logger.log(`\n   Is Phase 1? ${isP1 ? 'YES ✓' : 'NO'}`);
+      Logger.log(`   Is Phase 2? ${isP2 ? 'YES ✓' : 'NO'}`);
+      
+      // Show description preview
+      Logger.log(`\n📝 Description (first 500 chars):`);
+      Logger.log(desc.substring(0, 500));
+      
+      // Check tracking status
+      const trackingStatus = ProcessedEventsTracker.isEventProcessed(event);
+      Logger.log(`\n📋 Tracking Status:`);
+      Logger.log(`   Already processed: ${trackingStatus.processed}`);
+      Logger.log(`   Needs update: ${trackingStatus.needsUpdate}`);
+      Logger.log(`   Row index: ${trackingStatus.rowIndex}`);
+      
+      // Try to extract data
+      try {
+        const eventData = CalendarUtils.extractEventData(event);
+        Logger.log(`\n📊 Extracted Data:`);
+        Logger.log(`   Full Name: ${eventData.fullName}`);
+        Logger.log(`   Email: ${eventData.email}`);
+        Logger.log(`   Company: ${eventData.companyName}`);
+        Logger.log(`   Zoom Link: "${eventData.zoomLink}"`);
+      } catch (e) {
+        Logger.log(`\n⚠️ Could not extract data: ${e.message}`);
+      }
+      
+      rodneyEvents.push({
+        title: title,
+        isPhase1: isP1,
+        isPhase2: isP2,
+        location: location,
+        tracked: trackingStatus.processed
+      });
+    }
+  });
+  
+  // Check Event Tracker for Rodney entries
+  Logger.log(`\n${'='.repeat(70)}`);
+  Logger.log('EVENT TRACKER RECORDS FOR RODNEY');
+  Logger.log('='.repeat(70));
+  
+  try {
+    const ss = ProcessedEventsTracker.getTrackingSpreadsheet();
+    const sheet = ss.getSheetByName(CONFIG.PROCESSED_EVENTS.sheetName);
+    const data = sheet.getDataRange().getValues();
+    
+    let rodneyRecords = 0;
+    for (let i = 1; i < data.length; i++) {
+      const leaderName = data[i][3] || '';
+      const email = data[i][8] || '';
+      
+      if (leaderName.toLowerCase().includes('rodney') || 
+          email.includes('rcox@ministryinsights.com')) {
+        rodneyRecords++;
+        Logger.log(`\nRecord ${rodneyRecords}:`);
+        Logger.log(`   Event ID: ${data[i][0]}`);
+        Logger.log(`   Phase: ${data[i][2]}`);
+        Logger.log(`   Leader: ${data[i][3]}`);
+        Logger.log(`   Company: ${data[i][4]}`);
+        Logger.log(`   Event Date: ${data[i][5]}`);
+        Logger.log(`   Email: ${data[i][8]}`);
+        Logger.log(`   Build File ID: ${data[i][9]}`);
+      }
+    }
+    
+    if (rodneyRecords === 0) {
+      Logger.log('\n⚠️ No records found for Rodney in Event Tracker');
+    }
+    
+  } catch (e) {
+    Logger.log(`\n⚠️ Could not check Event Tracker: ${e.message}`);
+  }
+  
+  // Summary
+  Logger.log(`\n${'='.repeat(70)}`);
+  Logger.log('SUMMARY');
+  Logger.log('='.repeat(70));
+  Logger.log(`Found ${rodneyEvents.length} events related to Rodney`);
+  
+  if (rodneyEvents.length === 0) {
+    Logger.log('\n❌ No Rodney events found in calendar!');
+    Logger.log('   Check that the Phase 2 event exists and is within 90-day window');
+  } else {
+    rodneyEvents.forEach((e, i) => {
+      Logger.log(`\n${i + 1}. ${e.title}`);
+      Logger.log(`   Phase 1: ${e.isPhase1}, Phase 2: ${e.isPhase2}`);
+      Logger.log(`   Location/Zoom: "${e.location}"`);
+      Logger.log(`   Already tracked: ${e.tracked}`);
+      
+      if (e.isPhase2 && !e.location) {
+        Logger.log(`   ⚠️ PROBLEM: Phase 2 event but NO ZOOM LINK in Location field!`);
+      }
+    });
+  }
+  
+  Logger.log('\n' + '='.repeat(70));
+}

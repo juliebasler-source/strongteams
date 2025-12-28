@@ -499,3 +499,102 @@ function verifyBackfill() {
   Logger.log(`\n📎 Spreadsheet: ${stats.spreadsheetUrl}`);
   Logger.log('='.repeat(70));
 }
+/**
+ * Backfill emails from calendar events
+ * Uses Event ID stored in tracker to find original calendar event
+ */
+function backfillEmailsFromCalendar() {
+  Logger.log('='.repeat(70));
+  Logger.log('BACKFILL EMAILS FROM CALENDAR EVENTS');
+  Logger.log('='.repeat(70));
+  
+  const ss = ProcessedEventsTracker.getTrackingSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.PROCESSED_EVENTS.sheetName);
+  
+  if (!sheet) {
+    Logger.log('⚠️ Tracking sheet not found');
+    return;
+  }
+  
+  const data = sheet.getDataRange().getValues();
+  const COL = ProcessedEventsTracker.COLUMNS;
+  
+  let updated = 0;
+  let notFound = 0;
+  let alreadyHasEmail = 0;
+  let errors = 0;
+  
+  // Get all calendars to search
+  const calendars = [CalendarApp.getDefaultCalendar()];
+  if (CONFIG.CALENDARS && CONFIG.CALENDARS.secondary) {
+    CONFIG.CALENDARS.secondary.forEach(calId => {
+      try {
+        const cal = CalendarApp.getCalendarById(calId);
+        if (cal) calendars.push(cal);
+      } catch (e) {}
+    });
+  }
+  
+  Logger.log(`Searching ${calendars.length} calendar(s)\n`);
+  
+  // Process each Phase 1 record
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const phase = row[COL.PHASE];
+    const eventId = row[COL.EVENT_ID];
+    const leaderName = row[COL.LEADER_NAME];
+    const existingEmail = row[COL.LEADER_EMAIL];
+    
+    // Only process Phase 1 records without email
+    if (phase !== 'Phase 1') continue;
+    
+    if (existingEmail) {
+      alreadyHasEmail++;
+      continue;
+    }
+    
+    Logger.log(`\n${leaderName}:`);
+    
+    // Try to find the calendar event
+    let event = null;
+    for (const calendar of calendars) {
+      try {
+        event = calendar.getEventById(eventId);
+        if (event) break;
+      } catch (e) {}
+    }
+    
+    if (!event) {
+      Logger.log(`   ✗ Calendar event not found (may have been deleted)`);
+      notFound++;
+      continue;
+    }
+    
+    // Extract email from event description
+    try {
+      const eventData = CalendarUtils.extractEventData(event);
+      
+      if (eventData.email) {
+        // Update the email column
+        sheet.getRange(i + 1, COL.LEADER_EMAIL + 1).setValue(eventData.email);
+        Logger.log(`   ✓ Email found: ${eventData.email}`);
+        updated++;
+      } else {
+        Logger.log(`   ✗ No email in event description`);
+        notFound++;
+      }
+    } catch (e) {
+      Logger.log(`   ✗ Error extracting data: ${e.message}`);
+      errors++;
+    }
+  }
+  
+  Logger.log('\n' + '='.repeat(70));
+  Logger.log('SUMMARY');
+  Logger.log('='.repeat(70));
+  Logger.log(`Emails updated: ${updated}`);
+  Logger.log(`Already had email: ${alreadyHasEmail}`);
+  Logger.log(`Event not found: ${notFound}`);
+  Logger.log(`Errors: ${errors}`);
+  Logger.log('='.repeat(70));
+}

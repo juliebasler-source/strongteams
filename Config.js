@@ -1,12 +1,17 @@
 /**
  * Strong Teams Automation - Configuration
  * 
- * @version 1.2.0
+ * @version 1.2.1
  * @phase Phase 1 Enhanced - Event Deduplication
  * @description Centralized configuration for all automation settings
- * @lastUpdated 2024-12-25
+ * @lastUpdated 2024-12-28
  * 
  * IMPORTANT: Update adminEmail with your email address
+ * 
+ * CHANGELOG v1.2.1:
+ * - Disabled error email notifications (notifyOnError: false)
+ * - Prevents email quota issues from crashing automation loop
+ * - Errors still logged to Cloud Logs for review
  * 
  * CHANGELOG v1.2.0:
  * - Extended lookaheadHours to 2160 (90 days) for far-future event capture
@@ -36,7 +41,6 @@ const CONFIG = {
   createFolders: true,
   copyBuildFile: true,
   populateData: true,
-  sendEmailNotifications: true,
   
   // ========================================
   // FOLDER IDs
@@ -153,8 +157,8 @@ const CONFIG = {
   // ========================================
   EMAIL: {
     notifyOnSuccess: false,  // Send email when automation succeeds
-    notifyOnError: true,     // Send email when automation fails
-    adminEmail: 'admin@basleracademy.com'  // ⚠️ UPDATE THIS WITH YOUR EMAIL
+    notifyOnError: false,    // DISABLED - errors logged to Cloud Logs instead
+    adminEmail: 'admin@basleracademy.com'
   },
   
   // ========================================
