@@ -1,27 +1,48 @@
 /**
  * Strong Teams Automation - Processed Events Tracker
  * 
- * @version 1.0.0
- * @phase Phase 1 Enhanced - Event Deduplication
- * @description Track processed calendar events to prevent duplicate processing
- * @lastUpdated 2024-12-25
+ * @version 2.0.0
+ * @phase Phase 2 Enhanced - Email-Based Lookup
+ * @description Track processed calendar events with email-based Build File lookup
+ * @lastUpdated 2024-12-28
  * 
- * This module maintains a Google Sheet that tracks which calendar events
- * have already been processed. This enables:
- * - 90-day lookahead without reprocessing existing events
- * - Reprocessing when event details change (time, location, etc.)
- * - Automatic cleanup of old records
+ * CHANGELOG v2.0.0:
+ * - Added Leader Email column for Phase 2 lookup
+ * - Added Build File ID column for direct file access
+ * - Added Leader Folder ID column for fallback/metadata
+ * - Added findByEmail() function for fast Phase 2 lookups
+ * - Updated markEventProcessed() to store new metadata
  * 
- * The tracking sheet stores:
- * - Event ID (unique identifier from Google Calendar)
- * - Event fingerprint (hash of key event details)
- * - Phase type (Phase 1 or Phase 2)
- * - Leader name
- * - Processed timestamp
- * - Event date
+ * Column Structure:
+ * A: Event ID
+ * B: Fingerprint
+ * C: Phase
+ * D: Leader Name
+ * E: Company
+ * F: Event Date
+ * G: Processed At
+ * H: Last Updated
+ * I: Leader Email      <- NEW in v2.0.0
+ * J: Build File ID     <- NEW in v2.0.0
+ * K: Leader Folder ID  <- NEW in v2.0.0
  */
 
 const ProcessedEventsTracker = {
+  
+  // Column indices (0-based for arrays, 1-based for sheets)
+  COLUMNS: {
+    EVENT_ID: 0,
+    FINGERPRINT: 1,
+    PHASE: 2,
+    LEADER_NAME: 3,
+    COMPANY: 4,
+    EVENT_DATE: 5,
+    PROCESSED_AT: 6,
+    LAST_UPDATED: 7,
+    LEADER_EMAIL: 8,      // NEW
+    BUILD_FILE_ID: 9,     // NEW
+    LEADER_FOLDER_ID: 10  // NEW
+  },
   
   /**
    * Get or create the tracking spreadsheet
@@ -54,7 +75,7 @@ const ProcessedEventsTracker = {
   },
   
   /**
-   * Create a new tracking spreadsheet
+   * Create a new tracking spreadsheet with all columns including new ones
    * @param {Folder} folder - The folder to create the spreadsheet in
    * @returns {Spreadsheet} The new tracking spreadsheet
    */
@@ -70,7 +91,7 @@ const ProcessedEventsTracker = {
     const sheet = ss.getActiveSheet();
     sheet.setName(CONFIG.PROCESSED_EVENTS.sheetName);
     
-    // Add headers
+    // Add headers (including NEW columns)
     const headers = [
       'Event ID',
       'Fingerprint',
@@ -79,7 +100,10 @@ const ProcessedEventsTracker = {
       'Company',
       'Event Date',
       'Processed At',
-      'Last Updated'
+      'Last Updated',
+      'Leader Email',      // NEW
+      'Build File ID',     // NEW
+      'Leader Folder ID'   // NEW
     ];
     
     sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
@@ -99,6 +123,9 @@ const ProcessedEventsTracker = {
     sheet.setColumnWidth(6, 120);  // Event Date
     sheet.setColumnWidth(7, 150);  // Processed At
     sheet.setColumnWidth(8, 150);  // Last Updated
+    sheet.setColumnWidth(9, 200);  // Leader Email (NEW)
+    sheet.setColumnWidth(10, 300); // Build File ID (NEW)
+    sheet.setColumnWidth(11, 300); // Leader Folder ID (NEW)
     
     Logger.log(`✓ Created tracking spreadsheet: ${ss.getUrl()}`);
     Logger.log(`⚠️ IMPORTANT: Copy this spreadsheet ID to CONFIG.PROCESSED_EVENTS.spreadsheetId:`);
@@ -157,8 +184,8 @@ const ProcessedEventsTracker = {
     
     // Skip header row, search for event ID
     for (let i = 1; i < data.length; i++) {
-      if (data[i][0] === eventId) {
-        const storedFingerprint = data[i][1];
+      if (data[i][this.COLUMNS.EVENT_ID] === eventId) {
+        const storedFingerprint = data[i][this.COLUMNS.FINGERPRINT];
         
         if (storedFingerprint === currentFingerprint) {
           // Event exists and hasn't changed
@@ -176,10 +203,17 @@ const ProcessedEventsTracker = {
   },
   
   /**
-   * Mark an event as processed
+   * Mark an event as processed (UPDATED in v2.0.0)
+   * Now stores email, Build File ID, and Folder ID for Phase 2 lookup
+   * 
    * @param {CalendarEvent} event - The calendar event
    * @param {string} phase - 'Phase 1' or 'Phase 2'
-   * @param {Object} eventData - Extracted event data (for leader name, company)
+   * @param {Object} eventData - Extracted event data
+   * @param {string} eventData.fullName - Leader's full name
+   * @param {string} eventData.companyName - Company name
+   * @param {string} eventData.email - Leader's email (for lookup)
+   * @param {string} [eventData.buildFileId] - Build File ID (Phase 1 only)
+   * @param {string} [eventData.leaderFolderId] - Leader Folder ID (Phase 1 only)
    * @param {number} existingRowIndex - If updating existing record, the row index
    */
   markEventProcessed: function(event, phase, eventData, existingRowIndex = -1) {
@@ -191,14 +225,17 @@ const ProcessedEventsTracker = {
     const sheet = ss.getSheetByName(CONFIG.PROCESSED_EVENTS.sheetName);
     
     const rowData = [
-      event.getId(),
-      this.generateFingerprint(event),
-      phase,
-      eventData.fullName || '',
-      eventData.companyName || '',
-      event.getStartTime().toISOString(),
-      new Date().toISOString(),
-      new Date().toISOString()
+      event.getId(),                          // A: Event ID
+      this.generateFingerprint(event),        // B: Fingerprint
+      phase,                                  // C: Phase
+      eventData.fullName || '',               // D: Leader Name
+      eventData.companyName || '',            // E: Company
+      event.getStartTime().toISOString(),     // F: Event Date
+      new Date().toISOString(),               // G: Processed At
+      new Date().toISOString(),               // H: Last Updated
+      eventData.email || '',                  // I: Leader Email (NEW)
+      eventData.buildFileId || '',            // J: Build File ID (NEW)
+      eventData.leaderFolderId || ''          // K: Leader Folder ID (NEW)
     ];
     
     if (existingRowIndex > 0) {
@@ -209,6 +246,131 @@ const ProcessedEventsTracker = {
       // Add new row
       sheet.appendRow(rowData);
       Logger.log(`📝 Added tracking record for: ${eventData.fullName}`);
+    }
+    
+    // Log metadata storage for Phase 1
+    if (phase === 'Phase 1' && eventData.buildFileId) {
+      Logger.log(`   📧 Email stored: ${eventData.email}`);
+      Logger.log(`   📄 Build File ID stored: ${eventData.buildFileId}`);
+      Logger.log(`   📁 Folder ID stored: ${eventData.leaderFolderId}`);
+    }
+  },
+  
+  /**
+   * Find Build File by leader email (v2.0.1 - handles duplicates)
+   * Used by Phase 2 processing for fast lookup
+   * 
+   * @param {string} email - Leader's email address
+   * @param {string} leaderName - Optional: Leader's full name for disambiguation
+   * @returns {Object|null} { buildFileId, leaderFolderId, leaderName, company } or null
+   */
+  findByEmail: function(email, leaderName) {
+    if (!email) {
+      Logger.log(`⚠️ findByEmail called with empty email`);
+      return null;
+    }
+    
+    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedName = leaderName ? leaderName.toLowerCase().trim() : null;
+    
+    Logger.log(`🔍 Searching Event Tracker for email: ${normalizedEmail}`);
+    
+    const ss = this.getTrackingSpreadsheet();
+    const sheet = ss.getSheetByName(CONFIG.PROCESSED_EVENTS.sheetName);
+    
+    if (!sheet) {
+      Logger.log(`⚠️ Tracking sheet not found`);
+      return null;
+    }
+    
+    const data = sheet.getDataRange().getValues();
+    
+    // STEP 1: Collect ALL matches for this email
+    const matches = [];
+    
+    for (let i = 1; i < data.length; i++) {
+      const rowEmail = (data[i][this.COLUMNS.LEADER_EMAIL] || '').toLowerCase().trim();
+      
+      if (rowEmail === normalizedEmail) {
+        const buildFileId = data[i][this.COLUMNS.BUILD_FILE_ID];
+        
+        // Only consider rows that have a Build File ID
+        if (buildFileId) {
+          matches.push({
+            rowIndex: i,
+            buildFileId: buildFileId,
+            leaderFolderId: data[i][this.COLUMNS.LEADER_FOLDER_ID],
+            leaderName: data[i][this.COLUMNS.LEADER_NAME],
+            company: data[i][this.COLUMNS.COMPANY]
+          });
+        }
+      }
+    }
+    
+    // STEP 2: Handle results based on match count
+    if (matches.length === 0) {
+      Logger.log(`✗ No matches found for email: ${normalizedEmail}`);
+      return null;
+    }
+    
+    if (matches.length === 1) {
+      // Single match - return it
+      Logger.log(`✓ Found single match for ${normalizedEmail}: ${matches[0].leaderName}`);
+      return matches[0];
+    }
+    
+    // STEP 3: Multiple matches - try to narrow down by name
+    Logger.log(`⚠️ Found ${matches.length} matches for email: ${normalizedEmail}`);
+    matches.forEach((m, idx) => {
+      Logger.log(`   ${idx + 1}. ${m.leaderName} (${m.company})`);
+    });
+    
+    if (normalizedName) {
+      // Filter by name (case-insensitive)
+      const nameMatches = matches.filter(m => 
+        m.leaderName.toLowerCase().trim() === normalizedName
+      );
+      
+      if (nameMatches.length === 1) {
+        Logger.log(`✓ Narrowed to single match by name: ${nameMatches[0].leaderName}`);
+        return nameMatches[0];
+      }
+      
+      if (nameMatches.length > 1) {
+        Logger.log(`⚠️ Still ${nameMatches.length} matches after name filter - returning first`);
+        return nameMatches[0];
+      }
+      
+      // Name didn't match any - log warning and return first email match
+      Logger.log(`⚠️ Name "${leaderName}" didn't match any records. Email matches found but name mismatch.`);
+      Logger.log(`   Returning first email match: ${matches[0].leaderName}`);
+      return matches[0];
+    }
+    
+    // No name provided - return first match with warning
+    Logger.log(`⚠️ Multiple email matches, no name provided - returning first: ${matches[0].leaderName}`);
+    return matches[0];
+  },
+  
+  /**
+   * Get Build File directly by ID with error handling
+   * @param {string} fileId - Google Drive file ID
+   * @returns {File|null} The file object or null if not found
+   */
+  getBuildFileById: function(fileId) {
+    if (!fileId) {
+      return null;
+    }
+    
+    try {
+      const file = DriveApp.getFileById(fileId);
+      Logger.log(`✓ Retrieved Build File: ${file.getName()}`);
+      return file;
+    } catch (error) {
+      Logger.log(`⚠️ Could not retrieve Build File by ID: ${error.message}`);
+      Logger.log(`   File ID: ${fileId}`);
+      Logger.log(`   File may have been deleted or moved`);
+      return null;
     }
   },
   
@@ -235,7 +397,7 @@ const ProcessedEventsTracker = {
     
     // Go backwards to avoid index shifting issues
     for (let i = data.length - 1; i >= 1; i--) {
-      const eventDateStr = data[i][5]; // Event Date column
+      const eventDateStr = data[i][this.COLUMNS.EVENT_DATE];
       
       if (eventDateStr) {
         const eventDate = new Date(eventDateStr);
@@ -259,23 +421,29 @@ const ProcessedEventsTracker = {
     const sheet = ss.getSheetByName(CONFIG.PROCESSED_EVENTS.sheetName);
     
     if (!sheet) {
-      return { total: 0, phase1: 0, phase2: 0 };
+      return { total: 0, phase1: 0, phase2: 0, withEmail: 0, withFileId: 0 };
     }
     
     const data = sheet.getDataRange().getValues();
     
     let phase1Count = 0;
     let phase2Count = 0;
+    let withEmailCount = 0;
+    let withFileIdCount = 0;
     
     for (let i = 1; i < data.length; i++) {
-      if (data[i][2] === 'Phase 1') phase1Count++;
-      if (data[i][2] === 'Phase 2') phase2Count++;
+      if (data[i][this.COLUMNS.PHASE] === 'Phase 1') phase1Count++;
+      if (data[i][this.COLUMNS.PHASE] === 'Phase 2') phase2Count++;
+      if (data[i][this.COLUMNS.LEADER_EMAIL]) withEmailCount++;
+      if (data[i][this.COLUMNS.BUILD_FILE_ID]) withFileIdCount++;
     }
     
     return {
       total: data.length - 1, // Exclude header
       phase1: phase1Count,
       phase2: phase2Count,
+      withEmail: withEmailCount,
+      withFileId: withFileIdCount,
       spreadsheetUrl: ss.getUrl()
     };
   },
@@ -293,6 +461,8 @@ const ProcessedEventsTracker = {
     Logger.log(`   Total tracked: ${stats.total}`);
     Logger.log(`   Phase 1: ${stats.phase1}`);
     Logger.log(`   Phase 2: ${stats.phase2}`);
+    Logger.log(`   With Email: ${stats.withEmail}`);
+    Logger.log(`   With File ID: ${stats.withFileId}`);
     Logger.log(`   Spreadsheet: ${stats.spreadsheetUrl}`);
     
     const ss = this.getTrackingSpreadsheet();
@@ -309,13 +479,63 @@ const ProcessedEventsTracker = {
     
     const startRow = Math.max(1, data.length - 10);
     for (let i = startRow; i < data.length; i++) {
-      Logger.log(`\n   ${i}. ${data[i][3]} (${data[i][2]})`);
-      Logger.log(`      Company: ${data[i][4]}`);
-      Logger.log(`      Event Date: ${data[i][5]}`);
-      Logger.log(`      Processed: ${data[i][6]}`);
+      Logger.log(`\n   ${i}. ${data[i][this.COLUMNS.LEADER_NAME]} (${data[i][this.COLUMNS.PHASE]})`);
+      Logger.log(`      Company: ${data[i][this.COLUMNS.COMPANY]}`);
+      Logger.log(`      Email: ${data[i][this.COLUMNS.LEADER_EMAIL] || '(not stored)'}`);
+      Logger.log(`      Build File ID: ${data[i][this.COLUMNS.BUILD_FILE_ID] ? 'Yes' : 'No'}`);
+      Logger.log(`      Event Date: ${data[i][this.COLUMNS.EVENT_DATE]}`);
     }
     
     Logger.log('\n' + '='.repeat(70));
+  },
+  
+  /**
+   * Add new columns to existing tracker spreadsheet (MIGRATION HELPER)
+   * Run this once if you have an existing tracker without the new columns
+   */
+  migrateAddNewColumns: function() {
+    Logger.log('='.repeat(70));
+    Logger.log('MIGRATING EVENT TRACKER - Adding New Columns');
+    Logger.log('='.repeat(70));
+    
+    const ss = this.getTrackingSpreadsheet();
+    const sheet = ss.getSheetByName(CONFIG.PROCESSED_EVENTS.sheetName);
+    
+    if (!sheet) {
+      Logger.log('⚠️ Tracking sheet not found');
+      return;
+    }
+    
+    // Check current column count
+    const lastCol = sheet.getLastColumn();
+    Logger.log(`Current columns: ${lastCol}`);
+    
+    if (lastCol >= 11) {
+      Logger.log('✓ Already has 11+ columns - migration not needed');
+      return;
+    }
+    
+    // Add headers for new columns
+    const newHeaders = ['Leader Email', 'Build File ID', 'Leader Folder ID'];
+    const startCol = lastCol + 1;
+    
+    for (let i = 0; i < newHeaders.length; i++) {
+      const col = startCol + i;
+      sheet.getRange(1, col).setValue(newHeaders[i]);
+      sheet.getRange(1, col).setFontWeight('bold');
+      sheet.getRange(1, col).setBackground('#4285f4');
+      sheet.getRange(1, col).setFontColor('#ffffff');
+    }
+    
+    // Set column widths
+    sheet.setColumnWidth(9, 200);  // Leader Email
+    sheet.setColumnWidth(10, 300); // Build File ID
+    sheet.setColumnWidth(11, 300); // Leader Folder ID
+    
+    Logger.log(`✓ Added ${newHeaders.length} new columns`);
+    Logger.log('✓ Migration complete');
+    Logger.log('\nNext step: Run backfillEventTrackerMetadata() to populate existing records');
+    Logger.log('='.repeat(70));
   }
 };
 
@@ -338,6 +558,14 @@ function cleanupEventTracking() {
 }
 
 /**
+ * Migrate existing tracker to add new columns
+ * Run this ONCE if you have an existing tracker spreadsheet
+ */
+function migrateEventTracker() {
+  ProcessedEventsTracker.migrateAddNewColumns();
+}
+
+/**
  * Reset tracking - WARNING: This will cause all events to be reprocessed!
  */
 function resetEventTracking() {
@@ -353,4 +581,36 @@ function resetEventTracking() {
   } else {
     Logger.log('ℹ️ No records to delete');
   }
+}
+
+/**
+ * Test email lookup function
+ */
+function testEmailLookup() {
+  const testEmail = 'test@example.com'; // Change this to a real email in your tracker
+  
+  Logger.log('='.repeat(70));
+  Logger.log('TESTING EMAIL LOOKUP');
+  Logger.log('='.repeat(70));
+  Logger.log(`Searching for: ${testEmail}`);
+  
+  const result = ProcessedEventsTracker.findByEmail(testEmail);
+  
+  if (result) {
+    Logger.log('\n✓ FOUND:');
+    Logger.log(`   Leader: ${result.leaderName}`);
+    Logger.log(`   Company: ${result.company}`);
+    Logger.log(`   Build File ID: ${result.buildFileId}`);
+    Logger.log(`   Folder ID: ${result.leaderFolderId}`);
+    
+    // Try to get the file
+    const file = ProcessedEventsTracker.getBuildFileById(result.buildFileId);
+    if (file) {
+      Logger.log(`   File URL: ${file.getUrl()}`);
+    }
+  } else {
+    Logger.log('\n✗ NOT FOUND');
+  }
+  
+  Logger.log('='.repeat(70));
 }

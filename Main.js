@@ -1,30 +1,26 @@
 /**
  * Strong Teams Automation - Main Orchestrator
  * 
- * @version 1.2.0
- * @phase Phase 1 Enhanced - Event Deduplication
+ * @version 2.0.0
+ * @phase Phase 2 Enhanced - Email-Based Lookup
  * @description Main entry point and orchestration for Phase 1 & Phase 2 automation
- * @lastUpdated 2024-12-25
+ * @lastUpdated 2024-12-28
  * 
- * This script is triggered by calendar changes and coordinates all automation modules
- * to process Phase 1 (Leader Coaching) and Phase 2 (Team Building) sessions.
+ * CHANGELOG v2.0.0:
+ * - Phase 1 now stores email + file IDs in Event Tracker
+ * - Phase 2 uses email lookup for fast Build File retrieval
+ * - Added fallback to folder search if email lookup fails
+ * - Improved error handling and logging
  * 
  * CHANGELOG v1.2.0:
  * - Integrated ProcessedEventsTracker for event deduplication
  * - Events are now only processed once (unless details change)
  * - Supports 90-day lookahead without reprocessing
- * - Added tracking status to logs
- * 
- * CHANGELOG v1.1.0:
- * - Added Phase 2 event processing to onCalendarTrigger()
- * - Added processPhase2Event() function for Team Building sessions
- * - Added testPhase2Automation() test function
  */
 
 /**
  * Main trigger function - called by calendar trigger
  * Processes all new/updated calendar events (Phase 1 and Phase 2)
- * Now includes deduplication to prevent reprocessing
  */
 function onCalendarTrigger() {
   LoggerUtils.logStart();
@@ -60,13 +56,19 @@ function onCalendarTrigger() {
           }
           
           // Process the Phase 1 event
-          const eventData = processPhase1Event(event);
+          const result = processPhase1Event(event);
           
-          // Mark as processed (with row index if updating existing record)
+          // Mark as processed with metadata for Phase 2 lookup
           ProcessedEventsTracker.markEventProcessed(
             event, 
             'Phase 1', 
-            eventData,
+            {
+              fullName: result.eventData.fullName,
+              companyName: result.eventData.companyName,
+              email: result.eventData.email,
+              buildFileId: result.buildFileId,
+              leaderFolderId: result.leaderFolderId
+            },
             trackingStatus.needsUpdate ? trackingStatus.rowIndex : -1
           );
           
@@ -85,7 +87,7 @@ function onCalendarTrigger() {
             return;
           }
           
-          // Process the Phase 2 event
+          // Process the Phase 2 event (now uses email lookup!)
           const eventData = processPhase2Event(event);
           
           // Mark as processed
@@ -130,8 +132,11 @@ function onCalendarTrigger() {
 }
 
 /**
- * Process a single Phase 1 event
- * @returns {Object} eventData - The extracted event data (for tracking)
+ * Process a single Phase 1 event (UPDATED in v2.0.0)
+ * Now returns metadata for storage in Event Tracker
+ * 
+ * @param {CalendarEvent} event - The calendar event
+ * @returns {Object} { eventData, buildFileId, leaderFolderId }
  */
 function processPhase1Event(event) {
   // Defensive check: ensure event exists
@@ -147,6 +152,8 @@ function processPhase1Event(event) {
   Logger.log('─'.repeat(70));
   
   let eventData = null;
+  let buildFile = null;
+  let folders = null;
   
   try {
     // Step 1: Extract event data
@@ -155,11 +162,11 @@ function processPhase1Event(event) {
     
     // Step 2: Create folder structure
     Logger.log('\n[2/4] Creating folder structure...');
-    const folders = FolderUtils.createLeaderFolderStructure(eventData);
+    folders = FolderUtils.createLeaderFolderStructure(eventData);
     
     // Step 3: Create/update Build File
     Logger.log('\n[3/4] Processing Build File...');
-    const buildFile = BuildFileManager.processLeaderBuildFile(eventData, folders.leaderFolder);
+    buildFile = BuildFileManager.processLeaderBuildFile(eventData, folders.leaderFolder);
     
     // Step 4: Send notification (if enabled)
     Logger.log('\n[4/4] Finalizing...');
@@ -168,7 +175,12 @@ function processPhase1Event(event) {
     // Log success
     LoggerUtils.logSuccess(eventData, folders, buildFile);
     
-    return eventData; // Return for tracking
+    // Return metadata for Event Tracker storage
+    return {
+      eventData: eventData,
+      buildFileId: buildFile.getId(),
+      leaderFolderId: folders.leaderFolder.getId()
+    };
     
   } catch (error) {
     throw error; // Re-throw to be caught by outer handler
@@ -176,8 +188,11 @@ function processPhase1Event(event) {
 }
 
 /**
- * Process a single Phase 2 event
- * Updates existing Build File with Phase 2 meeting details
+ * Process a single Phase 2 event (UPDATED in v2.0.0)
+ * Now uses email-based lookup from Event Tracker
+ * Falls back to folder search if email lookup fails
+ * 
+ * @param {CalendarEvent} event - The calendar event
  * @returns {Object} eventData - The extracted event data (for tracking)
  */
 function processPhase2Event(event) {
@@ -186,40 +201,44 @@ function processPhase2Event(event) {
   Logger.log('─'.repeat(70));
   
   let eventData = null;
+  let buildFile = null;
   
   try {
-    // Step 1: Extract event data (same as Phase 1)
+    // Step 1: Extract event data
     Logger.log('\n[1/3] Extracting event data...');
     eventData = CalendarUtils.extractEventData(event);
+    Logger.log(`   Leader: ${eventData.fullName}`);
+    Logger.log(`   Email: ${eventData.email}`);
+    Logger.log(`   Company: ${eventData.companyName}`);
     
-    // Step 2: Find existing Build File
-    Logger.log('\n[2/3] Finding existing Build File...');
+    // Step 2: Find Build File using email lookup (NEW in v2.0.0)
+    Logger.log('\n[2/3] Finding Build File...');
     
-    const strongTeamsFolder = DriveApp.getFolderById(CONFIG.STRONG_TEAMS_FOLDER_ID);
+    // Try email lookup first (fast path)
+    const trackerResult = ProcessedEventsTracker.findByEmail(eventData.email, eventData.fullName);
     
-    // Find company folder
-    const companyFolders = strongTeamsFolder.getFoldersByName(eventData.companyName);
-    if (!companyFolders.hasNext()) {
-      throw new Error(`Company folder not found: ${eventData.companyName}`);
+    if (trackerResult && trackerResult.buildFileId) {
+      // Found in tracker - get file directly by ID
+      Logger.log(`   ✓ Found in Event Tracker via email lookup`);
+      buildFile = ProcessedEventsTracker.getBuildFileById(trackerResult.buildFileId);
+      
+      if (!buildFile) {
+        Logger.log(`   ⚠️ File ID found but file doesn't exist - falling back to folder search`);
+      }
     }
-    const companyFolder = companyFolders.next();
     
-    // Find leader folder
-    const leaderFolders = companyFolder.getFoldersByName(eventData.fullName);
-    if (!leaderFolders.hasNext()) {
-      throw new Error(`Leader folder not found: ${eventData.fullName}`);
+    // Fallback: Search by folder structure if email lookup failed
+    if (!buildFile) {
+      Logger.log(`   → Email lookup failed, trying folder search...`);
+      buildFile = findBuildFileByFolderSearch(eventData);
     }
-    const leaderFolder = leaderFolders.next();
     
-    // Find Build File
-    const buildFileName = `${eventData.fullName} - Strong Teams Build File`;
-    const buildFiles = leaderFolder.getFilesByName(buildFileName);
-    if (!buildFiles.hasNext()) {
-      throw new Error(`Build File not found: ${buildFileName}`);
+    // If still not found, throw error
+    if (!buildFile) {
+      throw new Error(`Build File not found for ${eventData.fullName} (${eventData.email}). Phase 1 may not have been completed yet.`);
     }
-    const buildFile = buildFiles.next();
     
-    Logger.log(`  ✓ Found Build File: ${buildFileName}`);
+    Logger.log(`   ✓ Found Build File: ${buildFile.getName()}`);
     
     // Step 3: Update Phase 2 Settings
     Logger.log('\n[3/3] Updating Phase 2 Settings...');
@@ -230,6 +249,7 @@ function processPhase2Event(event) {
     Logger.log('✓ SUCCESS - Phase 2 Update Complete');
     Logger.log('═'.repeat(70));
     Logger.log(`Leader: ${eventData.fullName}`);
+    Logger.log(`Email: ${eventData.email}`);
     Logger.log(`Company: ${eventData.companyName}`);
     Logger.log(`Phase 2 Date: ${eventData.formattedDate}`);
     Logger.log(`Phase 2 Time: ${eventData.formattedTime}`);
@@ -241,6 +261,56 @@ function processPhase2Event(event) {
     
   } catch (error) {
     throw error; // Re-throw to be caught by outer handler
+  }
+}
+
+/**
+ * Fallback function: Find Build File by searching folder structure
+ * Used when email lookup fails (old records, deleted tracker entries, etc.)
+ * 
+ * @param {Object} eventData - Event data with fullName and companyName
+ * @returns {File|null} The Build File or null if not found
+ */
+function findBuildFileByFolderSearch(eventData) {
+  Logger.log(`   🔍 Searching folders for: ${eventData.fullName}`);
+  
+  try {
+    const strongTeamsFolder = DriveApp.getFolderById(CONFIG.STRONG_TEAMS_FOLDER_ID);
+    
+    // Find company folder
+    const companyFolders = strongTeamsFolder.getFoldersByName(eventData.companyName);
+    if (!companyFolders.hasNext()) {
+      Logger.log(`   ✗ Company folder not found: ${eventData.companyName}`);
+      return null;
+    }
+    const companyFolder = companyFolders.next();
+    Logger.log(`   ✓ Found company folder: ${eventData.companyName}`);
+    
+    // Find leader folder
+    const leaderFolders = companyFolder.getFoldersByName(eventData.fullName);
+    if (!leaderFolders.hasNext()) {
+      Logger.log(`   ✗ Leader folder not found: ${eventData.fullName}`);
+      return null;
+    }
+    const leaderFolder = leaderFolders.next();
+    Logger.log(`   ✓ Found leader folder: ${eventData.fullName}`);
+    
+    // Find Build File
+    const buildFileName = `${eventData.fullName} - Strong Teams Build File`;
+    const buildFiles = leaderFolder.getFilesByName(buildFileName);
+    if (!buildFiles.hasNext()) {
+      Logger.log(`   ✗ Build File not found: ${buildFileName}`);
+      return null;
+    }
+    
+    const buildFile = buildFiles.next();
+    Logger.log(`   ✓ Found Build File via folder search`);
+    
+    return buildFile;
+    
+  } catch (error) {
+    Logger.log(`   ✗ Folder search error: ${error.message}`);
+    return null;
   }
 }
 
@@ -270,7 +340,7 @@ function handleEventError(event, error) {
 
 /**
  * Manual test function - run this to test Phase 1 without calendar trigger
- * Simulates a Phase 1 calendar event
+ * Tests the new metadata storage for Phase 2 lookup
  */
 function testPhase1Automation() {
   Logger.log('=== MANUAL TEST MODE - PHASE 1 ===\n');
@@ -296,12 +366,23 @@ function testPhase1Automation() {
       Logger.log(`\nProcessing this event...\n`);
       
       try {
-        const eventData = processPhase1Event(event);
+        const result = processPhase1Event(event);
         
-        // Mark as processed
-        ProcessedEventsTracker.markEventProcessed(event, 'Phase 1', eventData);
+        // Mark as processed with full metadata
+        ProcessedEventsTracker.markEventProcessed(event, 'Phase 1', {
+          fullName: result.eventData.fullName,
+          companyName: result.eventData.companyName,
+          email: result.eventData.email,
+          buildFileId: result.buildFileId,
+          leaderFolderId: result.leaderFolderId
+        });
         
         Logger.log('\n✓ Test completed successfully!');
+        Logger.log('\n📧 Stored for Phase 2 lookup:');
+        Logger.log(`   Email: ${result.eventData.email}`);
+        Logger.log(`   Build File ID: ${result.buildFileId}`);
+        Logger.log(`   Folder ID: ${result.leaderFolderId}`);
+        
       } catch (error) {
         Logger.log(`\n✗ Test failed: ${error.message}`);
         Logger.log(error.stack);
@@ -314,12 +395,10 @@ function testPhase1Automation() {
 }
 
 /**
- * Manual test function - run this to test Phase 2 without calendar trigger
- * 
- * @since v1.1.0
+ * Manual test function - run this to test Phase 2 with email lookup
  */
 function testPhase2Automation() {
-  Logger.log('=== MANUAL TEST MODE - PHASE 2 ===\n');
+  Logger.log('=== MANUAL TEST MODE - PHASE 2 (Email Lookup) ===\n');
   
   // Get your actual calendar
   const calendar = CalendarApp.getDefaultCalendar();
@@ -339,7 +418,7 @@ function testPhase2Automation() {
     
     if (CalendarUtils.isPhase2Event(event)) {
       Logger.log(`   ✓ This is a Phase 2 event!`);
-      Logger.log(`\nProcessing this event...\n`);
+      Logger.log(`\nProcessing this event (using email lookup)...\n`);
       
       try {
         const eventData = processPhase2Event(event);
@@ -357,6 +436,79 @@ function testPhase2Automation() {
     }
     Logger.log('');
   });
+}
+
+/**
+ * Test email lookup without processing
+ * Use this to verify the lookup works before running full Phase 2
+ */
+function testPhase2EmailLookup() {
+  Logger.log('=== TESTING PHASE 2 EMAIL LOOKUP ===\n');
+  
+  // Get calendar events
+  const calendar = CalendarApp.getDefaultCalendar();
+  const now = new Date();
+  const oneWeekFromNow = new Date(now.getTime() + (7 * 24 * 60 * 60 * 1000));
+  const events = calendar.getEvents(now, oneWeekFromNow);
+  
+  let phase2Count = 0;
+  
+  events.forEach((event) => {
+    if (!CalendarUtils.isPhase2Event(event)) return;
+    
+    phase2Count++;
+    Logger.log(`\n${'─'.repeat(60)}`);
+    Logger.log(`Phase 2 Event: ${event.getTitle()}`);
+    Logger.log('─'.repeat(60));
+    
+    try {
+      // Extract event data
+      const eventData = CalendarUtils.extractEventData(event);
+      Logger.log(`Leader: ${eventData.fullName}`);
+      Logger.log(`Email: ${eventData.email}`);
+      Logger.log(`Company: ${eventData.companyName}`);
+      
+      // Try email lookup
+      Logger.log(`\n🔍 Searching Event Tracker by email...`);
+      const result = ProcessedEventsTracker.findByEmail(eventData.email);
+      
+      if (result) {
+        Logger.log(`✓ FOUND in Event Tracker!`);
+        Logger.log(`   Stored Name: ${result.leaderName}`);
+        Logger.log(`   Stored Company: ${result.company}`);
+        Logger.log(`   Build File ID: ${result.buildFileId}`);
+        
+        // Try to get the file
+        const file = ProcessedEventsTracker.getBuildFileById(result.buildFileId);
+        if (file) {
+          Logger.log(`   File URL: ${file.getUrl()}`);
+          Logger.log(`   ✓ Ready for Phase 2 processing!`);
+        } else {
+          Logger.log(`   ⚠️ File ID exists but file not accessible`);
+        }
+      } else {
+        Logger.log(`✗ NOT FOUND in Event Tracker`);
+        Logger.log(`   Will fall back to folder search during processing`);
+        
+        // Test folder search
+        Logger.log(`\n🔍 Testing folder search fallback...`);
+        const buildFile = findBuildFileByFolderSearch(eventData);
+        if (buildFile) {
+          Logger.log(`   ✓ Found via folder search: ${buildFile.getName()}`);
+        } else {
+          Logger.log(`   ✗ Not found via folder search either`);
+          Logger.log(`   ⚠️ Phase 1 may not have been completed for this leader`);
+        }
+      }
+      
+    } catch (error) {
+      Logger.log(`✗ Error: ${error.message}`);
+    }
+  });
+  
+  Logger.log(`\n${'='.repeat(60)}`);
+  Logger.log(`Total Phase 2 events checked: ${phase2Count}`);
+  Logger.log('='.repeat(60));
 }
 
 /**
@@ -393,6 +545,12 @@ function testWithSampleData() {
     Logger.log('\nTesting Build File creation...');
     const buildFile = BuildFileManager.processLeaderBuildFile(sampleData, folders.leaderFolder);
     Logger.log(`✓ Build File created: ${buildFile.getUrl()}`);
+    
+    // Test email lookup storage
+    Logger.log('\nTesting Event Tracker storage...');
+    Logger.log(`   Email: ${sampleData.email}`);
+    Logger.log(`   Build File ID: ${buildFile.getId()}`);
+    Logger.log(`   Folder ID: ${folders.leaderFolder.getId()}`);
     
     Logger.log('\n✓ All tests passed!');
     
@@ -523,22 +681,6 @@ function diagnoseFolderIssue() {
       const count = companyNames.filter(n => n === name).length;
       Logger.log(`   ${i + 1}. "${name}" (${count} event${count > 1 ? 's' : ''})`);
     });
-    
-    // Identify the problem
-    Logger.log(`\n🔍 DIAGNOSIS:`);
-    if (uniqueLeaders.length === 1 && phase1Count > 1) {
-      Logger.log(`   ⚠️  PROBLEM FOUND: All ${phase1Count} leaders have the SAME NAME!`);
-      Logger.log(`   → All events showing as: "${uniqueLeaders[0]}"`);
-      Logger.log(`   → This means they all share ONE leader folder`);
-      Logger.log(`   → FIX: Check CalendarUtils.extractEventData() name extraction`);
-    } else if (uniqueCompanies.length === 1 && uniqueLeaders.length > 1) {
-      Logger.log(`   ℹ️  All leaders from same company: "${uniqueCompanies[0]}"`);
-      Logger.log(`   ✓ But each leader gets their own subfolder - this is CORRECT`);
-    } else if (uniqueLeaders.length === phase1Count) {
-      Logger.log(`   ✓ All leaders have UNIQUE names - folder structure should be correct`);
-    } else {
-      Logger.log(`   ℹ️  Mixed situation - some leaders may share names`);
-    }
   } else {
     Logger.log(`\n⚠️  No Phase 1 events found. Create some test events to diagnose.`);
   }
@@ -576,110 +718,6 @@ function testMultiCalendarAccess() {
 }
 
 /**
- * Diagnose Phase 2 Event Detection
- */
-function diagnosePhase2Detection() {
-  Logger.log('='.repeat(70));
-  Logger.log('PHASE 2 EVENT DETECTION DIAGNOSTIC');
-  Logger.log('='.repeat(70));
-  
-  // Get all events
-  const events = CalendarUtils.getNewCalendarEvents();
-  
-  Logger.log(`\n📊 Total events found: ${events.length}\n`);
-  
-  let phase1Count = 0;
-  let phase2Count = 0;
-  let otherCount = 0;
-  
-  events.forEach((event, index) => {
-    Logger.log(`\n${'─'.repeat(70)}`);
-    Logger.log(`Event #${index + 1}: ${event.getTitle()}`);
-    Logger.log(`Date: ${event.getStartTime()}`);
-    Logger.log(`Location: ${event.getLocation() || '(none)'}`);
-    
-    // Get calendar name
-    try {
-      const calId = event.getOriginalCalendarId();
-      const cal = CalendarApp.getCalendarById(calId);
-      Logger.log(`Calendar: ${cal ? cal.getName() : 'Unknown'}`);
-    } catch (e) {
-      Logger.log(`Calendar: Could not determine`);
-    }
-    
-    // Check description
-    const desc = event.getDescription() || '';
-    Logger.log(`\nDescription preview (first 200 chars):`);
-    Logger.log(desc.substring(0, 200));
-    
-    // Test Phase 1
-    const isP1 = CalendarUtils.isPhase1Event(event);
-    Logger.log(`\n✓ Is Phase 1? ${isP1 ? 'YES ✓' : 'NO'}`);
-    if (isP1) phase1Count++;
-    
-    // Test Phase 2
-    const isP2 = CalendarUtils.isPhase2Event(event);
-    Logger.log(`✓ Is Phase 2? ${isP2 ? 'YES ✓' : 'NO'}`);
-    if (isP2) phase2Count++;
-    
-    if (!isP1 && !isP2) otherCount++;
-    
-    // If Phase 2, try to extract leader info
-    if (isP2) {
-      Logger.log(`\n🎯 PHASE 2 EVENT DETECTED!`);
-      try {
-        const data = CalendarUtils.extractEventData(event);
-        Logger.log(`Leader: ${data.fullName}`);
-        Logger.log(`Email: ${data.email}`);
-        Logger.log(`Company: ${data.companyName}`);
-        Logger.log(`Zoom Link: ${data.zoomLink}`);
-        
-        // Check if Build File exists
-        Logger.log(`\n🔍 Checking for existing Build File...`);
-        const strongTeamsFolder = DriveApp.getFolderById(CONFIG.STRONG_TEAMS_FOLDER_ID);
-        const companyFolders = strongTeamsFolder.getFoldersByName(data.companyName);
-        
-        if (companyFolders.hasNext()) {
-          const companyFolder = companyFolders.next();
-          Logger.log(`✓ Found company folder: ${data.companyName}`);
-          
-          const leaderFolders = companyFolder.getFoldersByName(data.fullName);
-          if (leaderFolders.hasNext()) {
-            const leaderFolder = leaderFolders.next();
-            Logger.log(`✓ Found leader folder: ${data.fullName}`);
-            
-            const buildFileName = `${data.fullName} - Strong Teams Build File`;
-            const buildFiles = leaderFolder.getFilesByName(buildFileName);
-            
-            if (buildFiles.hasNext()) {
-              const buildFile = buildFiles.next();
-              Logger.log(`✓ Found Build File: ${buildFileName}`);
-              Logger.log(`   URL: ${buildFile.getUrl()}`);
-            } else {
-              Logger.log(`✗ Build File NOT found: ${buildFileName}`);
-            }
-          } else {
-            Logger.log(`✗ Leader folder NOT found: ${data.fullName}`);
-          }
-        } else {
-          Logger.log(`✗ Company folder NOT found: ${data.companyName}`);
-        }
-        
-      } catch (error) {
-        Logger.log(`✗ ERROR extracting data: ${error.message}`);
-      }
-    }
-  });
-  
-  Logger.log(`\n${'='.repeat(70)}`);
-  Logger.log(`SUMMARY:`);
-  Logger.log(`  Phase 1 events: ${phase1Count}`);
-  Logger.log(`  Phase 2 events: ${phase2Count}`);
-  Logger.log(`  Other events: ${otherCount}`);
-  Logger.log('='.repeat(70));
-}
-
-/**
  * Test deduplication without processing
  * Shows which events would be processed vs skipped
  */
@@ -694,6 +732,8 @@ function testDeduplication() {
   Logger.log(`   Total tracked events: ${stats.total}`);
   Logger.log(`   Phase 1: ${stats.phase1}`);
   Logger.log(`   Phase 2: ${stats.phase2}`);
+  Logger.log(`   With Email: ${stats.withEmail}`);
+  Logger.log(`   With File ID: ${stats.withFileId}`);
   
   // Get calendar events
   const events = CalendarUtils.getNewCalendarEvents();
