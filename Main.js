@@ -1,10 +1,17 @@
 /**
  * Strong Teams Automation - Main Orchestrator
  * 
- * @version 2.0.0
- * @phase Phase 2 Enhanced - Email-Based Lookup
+ * @version 2.2.0
+ * @phase Phase 2 Enhanced - Email-Based Lookup + Add-on Support
  * @description Main entry point and orchestration for Phase 1 & Phase 2 automation
- * @lastUpdated 2024-12-28
+ * @lastUpdated 2024-12-31
+ * 
+ * CHANGELOG v2.2.0:
+ * - Converted to Workspace Add-on for global availability
+ * - Added onHomepage, onFileScopeGranted, createAddonCard functions
+ * 
+ * CHANGELOG v2.1.0:
+ * - Added onOpen() menu with "Create Interview Link" option
  * 
  * CHANGELOG v2.0.0:
  * - Phase 1 now stores email + file IDs in Event Tracker
@@ -17,6 +24,68 @@
  * - Events are now only processed once (unless details change)
  * - Supports 90-day lookahead without reprocessing
  */
+
+// ============================================================================
+// MENU SETUP & ADD-ON TRIGGERS
+// ============================================================================
+
+/**
+ * Menu setup - runs when spreadsheet opens
+ * Creates the Strong Teams menu with available tools
+ */
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Strong Teams')
+    .addItem('Create Interview Link', 'createInterviewLink')
+    .addToUi();
+}
+
+/**
+ * Add-on homepage trigger - shows card when add-on opened
+ */
+function onHomepage(e) {
+  return createAddonCard();
+}
+
+/**
+ * Add-on file scope granted trigger
+ */
+function onFileScopeGranted(e) {
+  return createAddonCard();
+}
+
+/**
+ * Creates the add-on sidebar card
+ */
+function createAddonCard() {
+  var card = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Strong Teams Tools'))
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(CardService.newTextParagraph().setText('Tools for Strong Teams Build Files'))
+        .addWidget(
+          CardService.newTextButton()
+            .setText('Create Interview Link')
+            .setOnClickAction(CardService.newAction().setFunctionName('createInterviewLinkFromAddon'))
+        )
+    )
+    .build();
+  return card;
+}
+
+/**
+ * Create Interview Link - called from Add-on card
+ */
+function createInterviewLinkFromAddon(e) {
+  createInterviewLink();
+  return CardService.newActionResponseBuilder()
+    .setNotification(CardService.newNotification().setText('Interview Link created!'))
+    .build();
+}
+
+// ============================================================================
+// CALENDAR TRIGGER
+// ============================================================================
 
 /**
  * Main trigger function - called by calendar trigger
