@@ -142,6 +142,7 @@ const CalendarUtils = {
       lastName: this.extractField(description, 'Last name:'),
       email: this.extractFirstEmail(description),
       phoneNumber: this.extractField(description, 'Phone number:'),
+      additionalTeamMembers: parseInt(this.extractField(description, 'Additional Team Members:')) || 0,
       
       // Get Zoom link from Location field
       zoomLink: event.getLocation() || '',

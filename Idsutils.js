@@ -133,11 +133,12 @@ const IDSUtils = {
       status_email_proxy: true,
       
       // Notification settings
-      notification: {
-        frequency: "N",
-        limit: "H",
-        option_value: "6"
-      },
+        // Base of 6 assessments + any additional team members from booking
+        notification: {
+          frequency: "N",
+          limit: "H",
+          option_value: String(6 + (eventData.additionalTeamMembers || 0))
+        },
       
       // Activity settings
       activity: {
